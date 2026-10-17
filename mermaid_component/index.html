@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  * {
+    box-sizing: border-box;
+  }
+  html, body {
+    background: #000000 !important;
+    color: #ffffff !important;
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #viewport {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #000000;
+    cursor: grab;
+    border: 1px solid #222222;
+    border-radius: 6px;
+  }
+  #viewport.dragging {
+    cursor: grabbing;
+  }
+  #graph-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    transform-origin: 0 0;
+    display: inline-block;
+    padding: 60px;
+    will-change: transform;
+  }
+  
+  /* Mermaid pure black & white overrides */
+  svg {
+    background: #000000 !important;
+    overflow: visible !important;
+  }
+  
+  .node {
+    cursor: pointer !important;
+  }
+  .node rect, .node circle, .node ellipse, .node polygon, .node path {
+    fill: #000000 !important;
+    stroke: #ffffff !important;
+    stroke-width: 1.5px !important;
+    transition: fill 0.15s ease, stroke 0.15s ease;
+  }
+  .node:hover rect, .node:hover circle, .node:hover ellipse, .node:hover polygon {
+    fill: #ffffff !important;
+    stroke: #ffffff !important;
+  }
+  .node:hover .label, .node:hover span, .node:hover p {
+    color: #000000 !important;
+    fill: #000000 !important;
+  }
+  .node .label, .node span, .node p {
+    color: #ffffff !important;
+    fill: #ffffff !important;
+    font-weight: 500 !important;
+    font-size: 13px !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+  }
+  
+  .edgePath path, path.path {
+    stroke: #ffffff !important;
+    stroke-width: 1.5px !important;
+    fill: none !important;
+  }
+  .marker, marker path {
+    fill: #ffffff !important;
+    stroke: #ffffff !important;
+  }
+  .edgeLabel {
+    background-color: #000000 !important;
+  }
+  .edgeLabel span, .edgeLabel p {
+    background-color: #000000 !important;
+    color: #cccccc !important;
+    border: 1px solid #333333 !important;
+    border-radius: 3px !important;
+    padding: 2px 8px !important;
+    font-size: 11px !important;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+  }
+
+  /* HUD overlay controls */
+  .hud-panel {
+    position: absolute;
+    bottom: 16px;
+    right: 16px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: #000000;
+    border: 1px solid #222222;
+    padding: 4px;
+    border-radius: 6px;
+    z-index: 50;
+  }
+  .hud-btn {
+    background: #000000;
+    color: #ffffff;
+    border: 1px solid #222222;
+    border-radius: 4px;
+    min-width: 30px;
+    height: 28px;
+    padding: 0 8px;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: ui-monospace, monospace;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+  }
+  .hud-btn:hover {
+    background: #ffffff;
+    color: #000000;
+    border-color: #ffffff;
+  }
+  .hud-info {
+    position: absolute;
+    top: 14px;
+    left: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #000000;
+    border: 1px solid #222222;
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    color: #888888;
+    letter-spacing: 0.05em;
+    font-family: ui-monospace, Menlo, monospace;
+    z-index: 50;
+    pointer-events: none;
+  }
+  .hud-info .indicator {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #ffffff;
+  }
+  .scale-text {
+    font-size: 11px;
+    color: #888888;
+    padding: 0 6px;
+    font-family: ui-monospace, monospace;
+  }
+</style>
+</head>
+<body>
+<div id="viewport">
+  <div class="hud-info">
+    <div class="indicator"></div>
+    <span>KNOWLEDGE TOPOLOGY</span>
+    <span style="color:#444444;">|</span>
+    <span>CLICK NODE TO INSPECT</span>
+  </div>
+
+  <div id="graph-layer">
+    <div id="out"></div>
+  </div>
+
+  <div class="hud-panel">
+    <button class="hud-btn" id="btn-zoom-in" title="Zoom In">+</button>
+    <button class="hud-btn" id="btn-zoom-out" title="Zoom Out">-</button>
+    <span class="scale-text" id="scale-display">100%</span>
+    <button class="hud-btn" id="btn-reset" title="Reset View">RESET</button>
+  </div>
+</div>
+
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+
+mermaid.initialize({
+  startOnLoad: false,
+  theme: 'base',
+  securityLevel: 'loose',
+  themeVariables: {
+    darkMode: true,
+    background: '#000000',
+    mainBkg: '#000000',
+    nodeBorder: '#FFFFFF',
+    primaryColor: '#000000',
+    primaryTextColor: '#FFFFFF',
+    primaryBorderColor: '#FFFFFF',
+    lineColor: '#FFFFFF',
+    secondaryColor: '#000000',
+    tertiaryColor: '#000000',
+    edgeLabelBackground: '#000000',
+    clusterBkg: '#000000',
+    clusterBorder: '#333333',
+    defaultLinkColor: '#FFFFFF',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif',
+    fontSize: '13px'
+  },
+  flowchart: {
+    nodeSpacing: 50,
+    rankSpacing: 60,
+    curve: 'basis',
+    useMaxWidth: false,
+    htmlLabels: true
+  }
+});
+
+function send(type, data) {
+  window.parent.postMessage(
+    Object.assign({ isStreamlitMessage: true, type: type }, data), "*"
+  );
+}
+
+const viewport = document.getElementById("viewport");
+const layer = document.getElementById("graph-layer");
+const scaleDisplay = document.getElementById("scale-display");
+
+let currentScale = 1;
+let translateX = 40;
+let translateY = 40;
+let isDragging = false;
+let startPointerX = 0;
+let startPointerY = 0;
+let startTransX = 0;
+let startTransY = 0;
+let hasDragged = false;
+
+function updateTransform() {
+  layer.style.transform = `translate(${translateX}px, ${translateY}px) scale(${currentScale})`;
+  scaleDisplay.textContent = Math.round(currentScale * 100) + "%";
+}
+
+viewport.addEventListener("mousedown", (e) => {
+  if (e.target.closest(".hud-panel") || e.target.closest(".hud-btn")) return;
+  isDragging = true;
+  hasDragged = false;
+  startPointerX = e.clientX;
+  startPointerY = e.clientY;
+  startTransX = translateX;
+  startTransY = translateY;
+  viewport.classList.add("dragging");
+});
+
+window.addEventListener("mousemove", (e) => {
+  if (!isDragging) return;
+  const dx = e.clientX - startPointerX;
+  const dy = e.clientY - startPointerY;
+  if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
+    hasDragged = true;
+  }
+  translateX = startTransX + dx;
+  translateY = startTransY + dy;
+  updateTransform();
+});
+
+window.addEventListener("mouseup", () => {
+  isDragging = false;
+  viewport.classList.remove("dragging");
+});
+
+viewport.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const rect = viewport.getBoundingClientRect();
+  const mouseX = e.clientX - rect.left;
+  const mouseY = e.clientY - rect.top;
+
+  const zoomFactor = e.deltaY < 0 ? 1.15 : 0.87;
+  const newScale = Math.min(Math.max(currentScale * zoomFactor, 0.2), 4.0);
+
+  translateX = mouseX - (mouseX - translateX) * (newScale / currentScale);
+  translateY = mouseY - (mouseY - translateY) * (newScale / currentScale);
+  currentScale = newScale;
+
+  updateTransform();
+}, { passive: false });
+
+document.getElementById("btn-zoom-in").addEventListener("click", () => {
+  currentScale = Math.min(currentScale * 1.25, 4.0);
+  updateTransform();
+});
+
+document.getElementById("btn-zoom-out").addEventListener("click", () => {
+  currentScale = Math.max(currentScale * 0.8, 0.2);
+  updateTransform();
+});
+
+document.getElementById("btn-reset").addEventListener("click", () => {
+  currentScale = 1;
+  translateX = 40;
+  translateY = 40;
+  updateTransform();
+});
+
+let lastCode = null;
+
+async function draw(code, height) {
+  send("streamlit:setFrameHeight", { height: height || 750 });
+  if (code === lastCode) return;
+  lastCode = code;
+
+  try {
+    const { svg } = await mermaid.render("graph_" + Date.now(), code);
+    document.getElementById("out").innerHTML = svg;
+
+    currentScale = 1;
+    translateX = 40;
+    translateY = 40;
+    updateTransform();
+
+    document.querySelectorAll("#out g.node").forEach(el => {
+      el.addEventListener("click", (e) => {
+        if (hasDragged) return;
+        e.stopPropagation();
+
+        let nodeId = null;
+        const m = el.id.match(/^flowchart-(.+)-\d+$/);
+        if (m) {
+          nodeId = m[1];
+        } else {
+          nodeId = el.id.replace(/^flowchart-/, '').replace(/-\d+$/, '');
+        }
+        if (!nodeId) return;
+
+        send("streamlit:setComponentValue", {
+          value: { id: nodeId, ts: Date.now() },
+          dataType: "json"
+        });
+      });
+    });
+  } catch (err) {
+    console.error("Mermaid render error:", err);
+    document.getElementById("out").innerHTML = `<pre style="color:#ffffff; background:#000000; padding:20px; border:1px solid #333333; font-family:monospace; font-size:12px;">Mermaid syntax error: ${err.message}</pre>`;
+  }
+}
+
+window.addEventListener("message", (event) => {
+  if (event.data.type === "streamlit:render") {
+    const args = event.data.args;
+    draw(args.code, args.height);
+  }
+});
+
+send("streamlit:componentReady", { apiVersion: 1 });
+updateTransform();
+</script>
+</body>
+</html>
