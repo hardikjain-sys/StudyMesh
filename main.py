@@ -2,6 +2,8 @@ import os
 import json
 import re
 import tempfile
+import time
+import unicodedata
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -12,6 +14,13 @@ from google.genai import types
 
 load_dotenv()
 client = genai.Client()
+
+def sanitize_text(text: str) -> str:
+    """Removes null bytes and unprintable control characters that crash API serialization."""
+    if not text:
+        return ""
+    text = text.replace("\x00", "")
+    return "".join(ch for ch in text if unicodedata.category(ch)[0] != "C" or ch in "\n\r\t")
 
 def extract_json_from_text(text: str) -> dict:
     text = text.strip()
@@ -73,7 +82,6 @@ def build_mermaid_from_json(data: dict) -> str:
     return "\n".join(lines)
 
 def clean_arxiv_query(raw_query: str) -> str:
-    """Strips conversational filler and formats keywords for arXiv API."""
     cleaned = re.sub(r"(?i)\bthier\b", "their", raw_query)
     
     fillers = [
@@ -93,13 +101,9 @@ def clean_arxiv_query(raw_query: str) -> str:
 
     return "+AND+".join([f"all:{w}" for w in keywords])
 
-def fetch_arxiv_papers_text(query: str, max_papers: int = 2, max_pages_per_paper: int = 3) -> tuple[str, list[dict]]:
-    """
-    Searches arXiv, downloads PDFs, and extracts direct text content from each paper.
-    Returns the compiled research text and paper metadata.
-    """
+def fetch_arxiv_papers_text(query: str, max_papers: int = 2, max_pages_per_paper: int = 2) -> tuple[str, list[dict]]:
     formatted_query = clean_arxiv_query(query)
-    url = f"http://export.arxiv.org/api/query?search_query={formatted_query}&start=0&max_results={max_papers}"
+    url = f"https://export.arxiv.org/api/query?search_query={formatted_query}&start=0&max_results={max_papers}"
     
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
     with urllib.request.urlopen(req) as response:
@@ -133,7 +137,6 @@ def fetch_arxiv_papers_text(query: str, max_papers: int = 2, max_pages_per_paper
             "url": pdf_url
         })
 
-        # Download PDF
         pdf_req = urllib.request.Request(pdf_url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(pdf_req) as pdf_resp:
             pdf_bytes = pdf_resp.read()
@@ -142,7 +145,6 @@ def fetch_arxiv_papers_text(query: str, max_papers: int = 2, max_pages_per_paper
             temp_pdf_file.write(pdf_bytes)
             temp_pdf_path = temp_pdf_file.name
 
-        # Extract text directly from the PDF pages using PyMuPDF
         try:
             doc = fitz.open(temp_pdf_path)
             paper_content = f"\n\n--- RESEARCH PAPER: {title} ---\nAbstract: {summary}\n\nContent Excerpt:\n"
@@ -150,10 +152,14 @@ def fetch_arxiv_papers_text(query: str, max_papers: int = 2, max_pages_per_paper
             for p in range(num_pages):
                 paper_content += doc[p].get_text() + "\n"
             doc.close()
-            compiled_research_text += paper_content
+            compiled_research_text += sanitize_text(paper_content)
         finally:
             if os.path.exists(temp_pdf_path):
                 os.remove(temp_pdf_path)
+
+    # Cap context length at 15,000 chars to avoid server-side timeouts
+    if len(compiled_research_text) > 15000:
+        compiled_research_text = compiled_research_text[:15000] + "\n[Excerpt truncated for size]"
 
     return compiled_research_text, papers_info
 
@@ -167,9 +173,9 @@ def process_study_materials(image_paths: list[str], text_notes: str, research_te
 
     context_str = ""
     if text_notes:
-        context_str += f"User Additional Context / Notes:\n{text_notes}\n\n"
+        context_str += f"User Additional Context / Notes:\n{sanitize_text(text_notes)}\n\n"
     if research_text:
-        context_str += f"Fetched Research Papers Content:\n{research_text}\n\n"
+        context_str += f"Fetched Research Papers Content:\n{sanitize_text(research_text)}\n\n"
 
     if context_str:
         contents.append(context_str)
@@ -205,13 +211,28 @@ def process_study_materials(image_paths: list[str], text_notes: str, research_te
     """
     contents.append(prompt)
 
-    response = client.models.generate_content(
-        model="gemma-4-26b-a4b-it",
-        contents=contents,
-        config=types.GenerateContentConfig(
-            thinking_config=types.ThinkingConfig(thinking_level="high")
-        )
-    )
+    # Retry loop with backoff to handle transient 500 errors gracefully
+    max_retries = 3
+    response = None
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model="gemma-4-26b-a4b-it",
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    thinking_config=types.ThinkingConfig(thinking_level="high")
+                )
+            )
+            break
+        except Exception as e:
+            if attempt == max_retries - 1:
+                # Fallback request without thinking_config if gemma-4 endpoint encounters transient server issues
+                response = client.models.generate_content(
+                    model="gemma-4-26b-a4b-it",
+                    contents=contents
+                )
+            else:
+                time.sleep(2 * (attempt + 1))
 
     data = extract_json_from_text(response.text)
     data["mermaid"] = build_mermaid_from_json(data)
